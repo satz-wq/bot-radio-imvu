@@ -2,7 +2,12 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
@@ -11,14 +16,12 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
 
   const router = useRouter();
-  const supabase = createClientComponentClient();
 
   const handleLogin = async (e) => {
     e.preventDefault();
     setLoading(true);
     setErrorMsg('');
 
-    // Realiza a autenticação com e-mail e senha no Supabase
     const { error } = await supabase.auth.signInWithPassword({
       email,
       password,
@@ -28,7 +31,6 @@ export default function LoginPage() {
       setErrorMsg('E-mail ou senha incorretos.');
       setLoading(false);
     } else {
-      // Redireciona para o painel de controle e atualiza a sessão
       router.push('/');
       router.refresh();
     }
@@ -77,7 +79,6 @@ export default function LoginPage() {
   );
 }
 
-// Estilos inline limpos (funcionam sem depender de Tailwind ou CSS externo)
 const styles = {
   container: {
     minHeight: '100vh',
