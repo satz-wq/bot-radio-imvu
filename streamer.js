@@ -17,6 +17,13 @@ const server = http.createServer((req, res) => {
   req.setTimeout(0);
   res.setTimeout(0);
 
+  // Rota de Health Check para aprovação do deploy no Render
+  if (req.url === '/health' || req.url === '/ping') {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    return res.end('OK');
+  }
+
+  // Rota da Rádio
   if (req.url === '/' || req.url === '/stream') {
     res.writeHead(200, {
       'Content-Type': 'audio/mpeg',
@@ -141,9 +148,12 @@ function streamAudioUrl(url) {
   });
 }
 
-server.listen(8000, '0.0.0.0', () => {
+// Define a porta enviada pelo Render (ou 8000 como fallback local)
+const PORT = process.env.PORT || 8000;
+
+server.listen(PORT, '0.0.0.0', () => {
   console.log('====================================================');
-  console.log('Servidor de Rádio 24/7 rodando na porta 8000');
+  console.log(`Servidor de Rádio 24/7 rodando na porta ${PORT}`);
   console.log('====================================================');
   playNextSong();
 });
