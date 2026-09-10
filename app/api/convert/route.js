@@ -17,7 +17,7 @@ export async function POST(request) {
       return NextResponse.json({ error: 'URL não informada.' }, { status: 400 });
     }
 
-    // Links MP3 / Supabase diretos são salvos diretamente no Supabase pela Vercel
+    // 1. Links MP3 diretos/Supabase são salvos sem acionar o Render
     if (url.includes('.mp3') || url.includes('supabase.co') || url.includes('.m4a')) {
       const title = decodeURIComponent(url.split('/').pop().split('?')[0]) || 'Música MP3';
       const { error: dbError } = await supabase
@@ -28,14 +28,28 @@ export async function POST(request) {
       return NextResponse.json({ success: true, title, audioUrl: url });
     }
 
-    // Encaminha requisições do YouTube para o Render
-    const renderRes = await fetch('https://nodrama-radio.onrender.com/convert', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
+    // 2. Requisição ao Render
+    let renderRes;
+    try {
+      renderRes = await fetch('https://nodrama-radio.onrender.com/convert', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    } catch (fetchErr) {
+      throw new Error('O servidor do Render está indisponível ou reiniciando. Aguarde 15 segundos.');
+    }
 
-    const data = await renderRes.json();
+    // Captura a resposta bruta em texto para evitar o erro de parse de HTML
+    const responseText = await renderRes.text();
+    let data;
+
+    try {
+      data = JSON.parse(responseText);
+    } catch (e) {
+      console.error('Render devolveu HTML em vez de JSON:', responseText);
+      throw new Error('O servidor do Render retornou uma resposta inválida. Tente novamente em instantes.');
+    }
 
     if (!renderRes.ok) {
       throw new Error(data.error || 'Erro no servidor de conversão do Render.');
@@ -45,7 +59,7 @@ export async function POST(request) {
   } catch (err) {
     console.error('Erro na rota convert:', err);
     return NextResponse.json({ 
-      error: err.message || 'Falha ao se comunicar com o servidor de conversão.' 
+      error: err.message || 'Falha na comunicação com o servidor.' 
     }, { status: 500 });
   }
 }
