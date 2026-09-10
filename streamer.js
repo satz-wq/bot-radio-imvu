@@ -17,6 +17,12 @@ let clients = [];
 let audioBufferRing = [];
 const MAX_RING_SIZE = 35;
 
+// Função para extrair o ID do vídeo
+function extractVideoId(url) {
+  const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]{11})/);
+  return match ? match[1] : null;
+}
+
 const server = http.createServer(async (req, res) => {
   req.setTimeout(0);
   res.setTimeout(0);
@@ -61,10 +67,10 @@ const server = http.createServer(async (req, res) => {
         }
 
         const tempFilePath = path.join(os.tmpdir(), `audio-${Date.now()}.mp3`);
-        const cookiesPath = path.join(process.cwd(), 'cookies.txt');
+        let audioBuffer = null;
+        let title = 'Música do YouTube';
 
-        // TENTATIVA 1: Usando clientes móveis (Android/MWeb) para evitar bloqueio de cookies por IP
-        let downloadSuccess = false;
+        // TENTATIVA 1: yt-dlp usando cliente TV/Creator (bypassa detecção de bot)
         try {
           await ytDlp(url, {
             extractAudio: true,
@@ -73,46 +79,50 @@ const server = http.createServer(async (req, res) => {
             output: tempFilePath,
             noCheckCertificates: true,
             noWarnings: true,
-            extractorArgs: 'youtube:player_client=android,mweb'
+            extractorArgs: 'youtube:player_client=tv,creator'
           });
-          downloadSuccess = true;
-        } catch (err1) {
-          console.warn('Tentativa 1 (Android client) falhou, tentando com cookies...', err1.message);
 
-          // TENTATIVA 2: Recorre aos cookies caso o vídeo seja estritamente privado/restrito
-          if (fs.existsSync(cookiesPath)) {
-            await ytDlp(url, {
-              extractAudio: true,
-              audioFormat: 'mp3',
-              audioQuality: '128K',
-              output: tempFilePath,
-              noCheckCertificates: true,
+          if (fs.existsSync(tempFilePath)) {
+            audioBuffer = fs.readFileSync(tempFilePath);
+            fs.unlinkSync(tempFilePath);
+          }
+
+          try {
+            const info = await ytDlp(url, { 
+              dumpSingleJson: true, 
               noWarnings: true,
-              cookies: cookiesPath
+              extractorArgs: 'youtube:player_client=tv,creator'
             });
-            downloadSuccess = true;
-          } else {
-            throw err1;
+            if (info?.title) title = info.title;
+          } catch (e) {}
+
+        } catch (err1) {
+          console.warn('yt-dlp com cliente TV falhou, acionando API de fallback...', err1.message);
+
+          // TENTATIVA 2: Fallback via API externa de extração direta
+          const cleanUrl = `https://www.youtube.com/watch?v=${extractVideoId(url) || ''}`;
+          const fallbackRes = await fetch(`https://api.vkrdown.com/v4/youtube?url=${encodeURIComponent(cleanUrl)}`);
+          
+          if (fallbackRes.ok) {
+            const fallbackData = await fallbackRes.json();
+            const downloadItem = fallbackData.data?.downloads?.find(d => d.format === 'mp3' || d.extension === 'mp3' || d.type === 'audio');
+            
+            if (downloadItem?.url) {
+              title = fallbackData.data?.title || title;
+              const audioFileRes = await fetch(downloadItem.url);
+              if (audioFileRes.ok) {
+                const arrayBuf = await audioFileRes.arrayBuffer();
+                audioBuffer = Buffer.from(arrayBuf);
+              }
+            }
           }
         }
 
-        if (!downloadSuccess || !fs.existsSync(tempFilePath)) {
-          throw new Error('Não foi possível gerar o arquivo de áudio.');
+        if (!audioBuffer || audioBuffer.length === 0) {
+          throw new Error('Não foi possível extrair o áudio deste vídeo no momento.');
         }
 
-        let title = 'Música do YouTube';
-        try {
-          const info = await ytDlp(url, { 
-            dumpSingleJson: true, 
-            noWarnings: true,
-            extractorArgs: 'youtube:player_client=android,mweb' 
-          });
-          title = info.title || title;
-        } catch (e) {}
-
-        const audioBuffer = fs.readFileSync(tempFilePath);
-        if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
-
+        // Upload para o Supabase Storage
         const fileName = `musica-${Date.now()}.mp3`;
         const { error: uploadError } = await supabase.storage
           .from('musicas')
@@ -126,6 +136,7 @@ const server = http.createServer(async (req, res) => {
 
         const publicAudioUrl = publicUrlData.publicUrl;
 
+        // Inserção na tabela 'playlist'
         const { error: dbError } = await supabase
           .from('playlist')
           .insert([{ title, url: publicAudioUrl, genre: genre || 'Geral' }]);
