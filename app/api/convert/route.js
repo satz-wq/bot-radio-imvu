@@ -8,7 +8,6 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY || ''
 );
 
-// Extrai o ID do vídeo do YouTube
 function extractVideoId(url) {
   const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]{11})/);
   return match ? match[1] : null;
@@ -22,9 +21,9 @@ export async function POST(request) {
       return NextResponse.json({ error: 'URL não informada.' }, { status: 400 });
     }
 
-    // 1. Suporte nativo para links MP3 diretos (Supabase, CDN, etc)
-    if (url.includes('.mp3') || url.includes('supabase.co') || url.includes('.m4a')) {
-      const title = url.split('/').pop().split('?')[0] || 'Música Direta MP3';
+    // 1. Suporte para link MP3 direto (Supabase, CDN, etc)
+    if (url.includes('.mp3') || url.includes('supabase.co') || url.includes('.m4a') || url.includes('cdn')) {
+      const title = decodeURIComponent(url.split('/').pop().split('?')[0]) || 'Música MP3';
       const { error: dbError } = await supabase
         .from('playlist')
         .insert([{ title, url, genre: genre || 'Geral' }]);
@@ -40,32 +39,30 @@ export async function POST(request) {
 
     const cleanUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
-    // 2. Motores de conversão em cascata
-    const engines = [
-      // Motor 1: VKR Downloader Service
+    // 2. Fila de serviços de extração
+    const apis = [
+      // Motor 1: Loader Engine
       async () => {
-        const res = await fetch(`https://api.vkrdown.com/v4/youtube?url=${encodeURIComponent(cleanUrl)}`, { cache: 'no-store' });
-        if (!res.ok) return null;
-        const data = await res.json();
-        const mp3Stream = data.data?.downloads?.find(d => d.format === 'mp3' || d.extension === 'mp3' || d.type === 'audio');
-        if (mp3Stream?.url) {
-          return { downloadUrl: mp3Stream.url, title: data.data?.title };
+        const initRes = await fetch(`https://loader.to/api/ajax/download.php?format=mp3&url=${encodeURIComponent(cleanUrl)}`, { cache: 'no-store' });
+        if (!initRes.ok) return null;
+        const initData = await initRes.json();
+        
+        if (initData.id) {
+          for (let i = 0; i < 6; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+            const progRes = await fetch(`https://loader.to/api/ajax/progress.php?id=${initData.id}`, { cache: 'no-store' });
+            if (!progRes.ok) continue;
+            const progData = await progRes.json();
+            if (progData.download_url) {
+              return { downloadUrl: progData.download_url, title: progData.title };
+            }
+          }
         }
         return null;
       },
-      // Motor 2: Agatz YTmp3 Engine
+      // Motor 2: Instância Cobalt dedicada
       async () => {
-        const res = await fetch(`https://api.agatz.xyz/api/ytmp3?url=${encodeURIComponent(cleanUrl)}`, { cache: 'no-store' });
-        if (!res.ok) return null;
-        const data = await res.json();
-        if (data.status === 200 && data.data?.downloadUrl) {
-          return { downloadUrl: data.data.downloadUrl, title: data.data.title };
-        }
-        return null;
-      },
-      // Motor 3: Instância de espelho do Cobalt
-      async () => {
-        const res = await fetch('https://cobalt.qil.dev/', {
+        const res = await fetch('https://cobalt-api.kwiqk.com/', {
           method: 'POST',
           headers: {
             'Accept': 'application/json',
@@ -77,28 +74,15 @@ export async function POST(request) {
         });
         if (!res.ok) return null;
         const data = await res.json();
-        if (data.url) {
-          return { downloadUrl: data.url, title: data.filename || 'Música do YouTube' };
-        }
-        return null;
-      },
-      // Motor 4: Invidious Stream Direct
-      async () => {
-        const res = await fetch(`https://invidious.nerdvpn.de/api/v1/videos/${videoId}`, { cache: 'no-store' });
-        if (!res.ok) return null;
-        const data = await res.json();
-        const audioFormat = data.adaptiveFormats?.find(f => f.type?.includes('audio'));
-        if (audioFormat?.url) {
-          return { downloadUrl: audioFormat.url, title: data.title };
-        }
+        if (data.url) return { downloadUrl: data.url, title: data.filename || 'Música do YouTube' };
         return null;
       }
     ];
 
     let result = null;
-    for (const engine of engines) {
+    for (const api of apis) {
       try {
-        result = await engine();
+        result = await api();
         if (result?.downloadUrl) break;
       } catch (e) {
         continue;
@@ -106,16 +90,14 @@ export async function POST(request) {
     }
 
     if (!result || !result.downloadUrl) {
-      throw new Error('Não foi possível extrair o áudio deste vídeo. Tente outro link do YouTube ou cole o link direto de um arquivo MP3.');
+      throw new Error('O YouTube bloqueou a conversão deste vídeo no momento. Tente outro link ou envie o arquivo MP3.');
     }
 
     const title = result.title || 'Música do YouTube';
 
     // 3. Download do áudio extraído
-    const audioRes = await fetch(result.downloadUrl, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
-    });
-    if (!audioRes.ok) throw new Error('Falha ao obter o arquivo do servidor de conversão.');
+    const audioRes = await fetch(result.downloadUrl);
+    if (!audioRes.ok) throw new Error('Falha ao baixar o arquivo do servidor de conversão.');
 
     const arrayBuf = await audioRes.arrayBuffer();
     const audioBuffer = Buffer.from(arrayBuf);
@@ -134,7 +116,7 @@ export async function POST(request) {
 
     const publicAudioUrl = publicUrlData.publicUrl;
 
-    // 5. Inserção na tabela 'playlist'
+    // 5. Inserir registro no banco
     const { error: dbError } = await supabase
       .from('playlist')
       .insert([{ title, url: publicAudioUrl, genre: genre || 'Geral' }]);
