@@ -17,7 +17,7 @@ export async function POST(request) {
       return NextResponse.json({ error: 'URL não informada.' }, { status: 400 });
     }
 
-    // 1. Links MP3 diretos e do Supabase são processados direto na Vercel (sem depender do Render)
+    // Links de áudio direto processados na Vercel
     if (url.includes('.mp3') || url.includes('supabase.co') || url.includes('.m4a')) {
       const title = decodeURIComponent(url.split('/').pop().split('?')[0]) || 'Música MP3';
       const { error: dbError } = await supabase
@@ -28,31 +28,26 @@ export async function POST(request) {
       return NextResponse.json({ success: true, title, audioUrl: url });
     }
 
-    // 2. Encaminha vídeos do YouTube para o servidor no Render
-    const RENDER_URL = 'https://nodrama-radio.onrender.com';
-
-    let renderRes;
-    try {
-      renderRes = await fetch(`${RENDER_URL}/convert`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-    } catch (fetchErr) {
-      throw new Error('O servidor da rádio no Render está acordando. Aguarde 20 segundos e tente novamente.');
-    }
+    // Encaminha requisições do YouTube ao Render
+    const renderRes = await fetch('https://nodrama-radio.onrender.com/convert', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
 
     const data = await renderRes.json();
 
     if (!renderRes.ok) {
-      throw new Error(data.error || 'Erro no servidor de conversão do Render.');
+      throw new Error(data.error || 'Erro ao processar música no Render.');
     }
 
     return NextResponse.json(data);
   } catch (err) {
-    console.error('Erro na API convert:', err);
+    console.error('Erro na rota convert:', err);
     return NextResponse.json({ 
-      error: err.message || 'Falha ao processar a solicitação.' 
+      error: err.message === 'fetch failed' 
+        ? 'O servidor do Render levou muito tempo para responder ou reiniciar. Tente novamente em alguns segundos.' 
+        : err.message 
     }, { status: 500 });
   }
 }

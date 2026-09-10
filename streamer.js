@@ -17,7 +17,6 @@ let clients = [];
 let audioBufferRing = [];
 const MAX_RING_SIZE = 35;
 
-// Função para extrair o ID do vídeo
 function extractVideoId(url) {
   const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]{11})/);
   return match ? match[1] : null;
@@ -53,7 +52,7 @@ const server = http.createServer(async (req, res) => {
           return res.end(JSON.stringify({ error: 'URL não informada.' }));
         }
 
-        // Se for arquivo MP3 / Supabase direto
+        // Links MP3 / Supabase diretos
         if (url.includes('.mp3') || url.includes('supabase.co') || url.includes('.m4a')) {
           const title = decodeURIComponent(url.split('/').pop().split('?')[0]) || 'Música MP3';
           const { error: dbErr } = await supabase
@@ -70,7 +69,7 @@ const server = http.createServer(async (req, res) => {
         let audioBuffer = null;
         let title = 'Música do YouTube';
 
-        // TENTATIVA 1: yt-dlp usando cliente TV/Creator (bypassa detecção de bot)
+        // Otimização do yt-dlp para o plano gratuito do Render
         try {
           await ytDlp(url, {
             extractAudio: true,
@@ -79,6 +78,8 @@ const server = http.createServer(async (req, res) => {
             output: tempFilePath,
             noCheckCertificates: true,
             noWarnings: true,
+            noPlaylist: true,
+            maxFilesize: '35M',
             extractorArgs: 'youtube:player_client=tv,creator'
           });
 
@@ -91,15 +92,15 @@ const server = http.createServer(async (req, res) => {
             const info = await ytDlp(url, { 
               dumpSingleJson: true, 
               noWarnings: true,
+              noPlaylist: true,
               extractorArgs: 'youtube:player_client=tv,creator'
             });
             if (info?.title) title = info.title;
           } catch (e) {}
 
         } catch (err1) {
-          console.warn('yt-dlp com cliente TV falhou, acionando API de fallback...', err1.message);
+          console.warn('yt-dlp falhou, buscando via API fallback...', err1.message);
 
-          // TENTATIVA 2: Fallback via API externa de extração direta
           const cleanUrl = `https://www.youtube.com/watch?v=${extractVideoId(url) || ''}`;
           const fallbackRes = await fetch(`https://api.vkrdown.com/v4/youtube?url=${encodeURIComponent(cleanUrl)}`);
           
@@ -119,7 +120,7 @@ const server = http.createServer(async (req, res) => {
         }
 
         if (!audioBuffer || audioBuffer.length === 0) {
-          throw new Error('Não foi possível extrair o áudio deste vídeo no momento.');
+          throw new Error('Falha ao obter áudio. Verifique se o vídeo tem menos de 10 minutos.');
         }
 
         // Upload para o Supabase Storage
@@ -136,7 +137,7 @@ const server = http.createServer(async (req, res) => {
 
         const publicAudioUrl = publicUrlData.publicUrl;
 
-        // Inserção na tabela 'playlist'
+        // Inserção no Banco
         const { error: dbError } = await supabase
           .from('playlist')
           .insert([{ title, url: publicAudioUrl, genre: genre || 'Geral' }]);
