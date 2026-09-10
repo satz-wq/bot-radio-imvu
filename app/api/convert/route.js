@@ -22,8 +22,8 @@ export async function POST(request) {
       return NextResponse.json({ error: 'URL não informada.' }, { status: 400 });
     }
 
-    // 1. Suporte para link direto de MP3 (ex: Supabase Storage)
-    if (url.includes('.mp3') || url.includes('supabase.co')) {
+    // 1. Suporte nativo para links MP3 diretos (Supabase, CDN, etc)
+    if (url.includes('.mp3') || url.includes('supabase.co') || url.includes('.m4a')) {
       const title = url.split('/').pop().split('?')[0] || 'Música Direta MP3';
       const { error: dbError } = await supabase
         .from('playlist')
@@ -40,9 +40,20 @@ export async function POST(request) {
 
     const cleanUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
-    // 2. Provedores de conversão em sequência
-    const providers = [
-      // Provedor 1: Agatz YTmp3 API
+    // 2. Motores de conversão em cascata
+    const engines = [
+      // Motor 1: VKR Downloader Service
+      async () => {
+        const res = await fetch(`https://api.vkrdown.com/v4/youtube?url=${encodeURIComponent(cleanUrl)}`, { cache: 'no-store' });
+        if (!res.ok) return null;
+        const data = await res.json();
+        const mp3Stream = data.data?.downloads?.find(d => d.format === 'mp3' || d.extension === 'mp3' || d.type === 'audio');
+        if (mp3Stream?.url) {
+          return { downloadUrl: mp3Stream.url, title: data.data?.title };
+        }
+        return null;
+      },
+      // Motor 2: Agatz YTmp3 Engine
       async () => {
         const res = await fetch(`https://api.agatz.xyz/api/ytmp3?url=${encodeURIComponent(cleanUrl)}`, { cache: 'no-store' });
         if (!res.ok) return null;
@@ -52,19 +63,28 @@ export async function POST(request) {
         }
         return null;
       },
-      // Provedor 2: Dreaded YTDL Bridge
+      // Motor 3: Instância de espelho do Cobalt
       async () => {
-        const res = await fetch(`https://api.dreaded.site/api/ytdl/audio?url=${encodeURIComponent(cleanUrl)}`, { cache: 'no-store' });
+        const res = await fetch('https://cobalt.qil.dev/', {
+          method: 'POST',
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+          },
+          body: JSON.stringify({ url: cleanUrl, downloadMode: 'audio', audioFormat: 'mp3' }),
+          cache: 'no-store'
+        });
         if (!res.ok) return null;
         const data = await res.json();
-        if (data.success && data.result?.downloadUrl) {
-          return { downloadUrl: data.result.downloadUrl, title: data.result.title };
+        if (data.url) {
+          return { downloadUrl: data.url, title: data.filename || 'Música do YouTube' };
         }
         return null;
       },
-      // Provedor 3: Invidious Direct Audio Stream
+      // Motor 4: Invidious Stream Direct
       async () => {
-        const res = await fetch(`https://inv.tux.pizza/api/v1/videos/${videoId}`, { cache: 'no-store' });
+        const res = await fetch(`https://invidious.nerdvpn.de/api/v1/videos/${videoId}`, { cache: 'no-store' });
         if (!res.ok) return null;
         const data = await res.json();
         const audioFormat = data.adaptiveFormats?.find(f => f.type?.includes('audio'));
@@ -75,25 +95,27 @@ export async function POST(request) {
       }
     ];
 
-    let extractedData = null;
-    for (const provider of providers) {
+    let result = null;
+    for (const engine of engines) {
       try {
-        extractedData = await provider();
-        if (extractedData?.downloadUrl) break;
+        result = await engine();
+        if (result?.downloadUrl) break;
       } catch (e) {
         continue;
       }
     }
 
-    if (!extractedData || !extractedData.downloadUrl) {
-      throw new Error('Vídeo protegido ou indisponível. Tente outro link do YouTube ou um link MP3 direto.');
+    if (!result || !result.downloadUrl) {
+      throw new Error('Não foi possível extrair o áudio deste vídeo. Tente outro link do YouTube ou cole o link direto de um arquivo MP3.');
     }
 
-    const title = extractedData.title || 'Música do YouTube';
+    const title = result.title || 'Música do YouTube';
 
-    // 3. Baixar o áudio extraído
-    const audioRes = await fetch(extractedData.downloadUrl);
-    if (!audioRes.ok) throw new Error('Falha ao baixar o arquivo de áudio do servidor de conversão.');
+    // 3. Download do áudio extraído
+    const audioRes = await fetch(result.downloadUrl, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+    });
+    if (!audioRes.ok) throw new Error('Falha ao obter o arquivo do servidor de conversão.');
 
     const arrayBuf = await audioRes.arrayBuffer();
     const audioBuffer = Buffer.from(arrayBuf);
@@ -112,7 +134,7 @@ export async function POST(request) {
 
     const publicAudioUrl = publicUrlData.publicUrl;
 
-    // 5. Inserir na tabela 'playlist'
+    // 5. Inserção na tabela 'playlist'
     const { error: dbError } = await supabase
       .from('playlist')
       .insert([{ title, url: publicAudioUrl, genre: genre || 'Geral' }]);
