@@ -49,9 +49,22 @@ const server = http.createServer(async (req, res) => {
           return res.end(JSON.stringify({ error: 'URL não informada.' }));
         }
 
+        // Se for um link direto de arquivo MP3 / Supabase, ignora o YouTube e salva direto
+        if (url.includes('.mp3') || url.includes('supabase.co') || url.includes('.m4a')) {
+          const title = decodeURIComponent(url.split('/').pop().split('?')[0]) || 'Música MP3';
+          const { error: dbErr } = await supabase
+            .from('playlist')
+            .insert([{ title, url, genre: genre || 'Geral' }]);
+
+          if (dbErr) throw dbErr;
+
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ success: true, title, audioUrl: url }));
+        }
+
         const tempFilePath = path.join(os.tmpdir(), `audio-${Date.now()}.mp3`);
 
-        // Executa o yt-dlp diretamente no Linux do Render
+        // Executa yt-dlp simulando clientes Android/iOS para burlar o bot check do YouTube
         await ytDlp(url, {
           extractAudio: true,
           audioFormat: 'mp3',
@@ -59,14 +72,25 @@ const server = http.createServer(async (req, res) => {
           output: tempFilePath,
           noCheckCertificates: true,
           noWarnings: true,
-          userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+          extractorArgs: 'youtube:player_client=ios,android,mweb',
+          addHeader: [
+            'referer:youtube.com',
+            'user-agent:Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1'
+          ]
         });
 
-        // Obtém informações do título
-        const info = await ytDlp(url, { dumpSingleJson: true, noWarnings: true });
-        const title = info.title || 'Música da Rádio';
+        // Obtém o título
+        let title = 'Música do YouTube';
+        try {
+          const info = await ytDlp(url, { 
+            dumpSingleJson: true, 
+            noWarnings: true,
+            extractorArgs: 'youtube:player_client=ios,android,mweb' 
+          });
+          title = info.title || title;
+        } catch (e) {}
 
-        // Lê o MP3 gerado e envia para o Supabase Storage
+        // Lê o arquivo gerado e envia ao Supabase
         const audioBuffer = fs.readFileSync(tempFilePath);
         if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
 
