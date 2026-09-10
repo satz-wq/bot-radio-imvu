@@ -1,17 +1,64 @@
 'use client';
+
 import { useState, useEffect } from 'react';
-import { Music, Link2, Loader2, Radio, Trash2, ListMusic, Plus, Copy, CheckCircle2 } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { createClient } from '@supabase/supabase-js';
+import {
+  Music,
+  Link2,
+  Loader2,
+  Radio,
+  Trash2,
+  ListMusic,
+  Plus,
+  Copy,
+  CheckCircle2,
+  LogOut,
+  Disc,
+  Filter,
+  Sparkles,
+} from 'lucide-react';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL || '',
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || ''
+);
+
+const GENRES = ['Geral', 'Reggae', 'MPB', 'Funk'];
 
 export default function Home() {
+  const router = useRouter();
+
+  // Autenticação
+  const [authLoading, setAuthLoading] = useState(true);
+
+  // Estados do Formulário e Playlist
   const [url, setUrl] = useState('');
+  const [genre, setGenre] = useState('Geral');
+  const [activeGenre, setActiveGenre] = useState('TODAS');
+  const [filterGenre, setFilterGenre] = useState('TODAS');
   const [loading, setLoading] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
   const [playlist, setPlaylist] = useState([]);
   const [fetchingPlaylist, setFetchingPlaylist] = useState(true);
   const [error, setError] = useState('');
   const [copiedId, setCopiedId] = useState(null);
+  const [updatingSettings, setUpdatingSettings] = useState(false);
 
-  // Busca a playlist atualizada da API
+  // 1. Bloqueia acesso se não estiver logado
+  useEffect(() => {
+    const checkAuth = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        router.push('/login');
+      } else {
+        setAuthLoading(false);
+      }
+    };
+    checkAuth();
+  }, [router]);
+
+  // 2. Carrega a playlist do banco
   const refreshPlaylist = async () => {
     try {
       const res = await fetch('/api/playlist');
@@ -26,8 +73,8 @@ export default function Home() {
     }
   };
 
-  // Carrega a playlist uma única vez ao abrir a página
   useEffect(() => {
+    if (authLoading) return;
     let active = true;
 
     async function loadInitialData() {
@@ -45,13 +92,35 @@ export default function Home() {
     }
 
     loadInitialData();
-
     return () => {
       active = false;
     };
-  }, []);
+  }, [authLoading]);
 
-  // Adicionar nova música
+  // Função de Sair
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    router.push('/login');
+  };
+
+  // Trocar Playlist Ativa no Transmissor
+  const handleActiveGenreChange = async (newGenre) => {
+    setActiveGenre(newGenre);
+    setUpdatingSettings(true);
+    try {
+      await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ activeGenre: newGenre }),
+      });
+    } catch (err) {
+      console.error('Erro ao atualizar playlist ativa:', err);
+    } finally {
+      setUpdatingSettings(false);
+    }
+  };
+
+  // Adicionar nova música com categoria
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
@@ -61,7 +130,7 @@ export default function Home() {
       const res = await fetch('/api/convert', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url }),
+        body: JSON.stringify({ url, genre }),
       });
 
       const data = await res.json();
@@ -77,7 +146,7 @@ export default function Home() {
     }
   };
 
-  // Excluir música da playlist
+  // Excluir música
   const handleDelete = async (id) => {
     setDeletingId(id);
     try {
@@ -103,34 +172,102 @@ export default function Home() {
     setTimeout(() => setCopiedId(null), 2000);
   };
 
+  const filteredPlaylist = filterGenre === 'TODAS'
+    ? playlist
+    : playlist.filter((s) => (s.genre || 'Geral') === filterGenre);
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-black text-purple-300 flex items-center justify-center">
+        <Loader2 className="w-8 h-8 animate-spin text-purple-500 drop-shadow-[0_0_10px_rgba(168,85,247,0.8)]" />
+        <span className="ml-3 text-zinc-400 text-sm tracking-wider uppercase font-semibold">
+          Iniciando Drama Radio...
+        </span>
+      </div>
+    );
+  }
+
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-100 p-4 md:p-8 flex flex-col items-center">
+    <main className="min-h-screen bg-black text-zinc-100 p-4 md:p-8 flex flex-col items-center selection:bg-purple-600 selection:text-white">
       <div className="w-full max-w-2xl space-y-6">
-        
-        {/* Cabeçalho */}
-        <header className="flex items-center justify-between bg-slate-900/80 border border-slate-800 p-5 rounded-2xl shadow-xl backdrop-blur-md">
-          <div className="flex items-center gap-3">
-            <div className="p-3 bg-purple-600/20 text-purple-400 rounded-xl border border-purple-500/20">
-              <Radio className="w-6 h-6 animate-pulse" />
-            </div>
-            <div>
-              <h1 className="text-xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
-                Painel Rádio IMVU
-              </h1>
-              <p className="text-xs text-slate-400">Transmissão 24/7 & Gerenciador de Playlist</p>
-            </div>
+
+        {/* Topbar Administrador & Logout */}
+        <div className="flex justify-between items-center w-full border-b border-purple-950/60 pb-3">
+          <div className="flex items-center gap-2">
+            <Sparkles className="w-4 h-4 text-purple-400 animate-pulse" />
+            <span className="text-xs text-purple-300 tracking-widest font-mono uppercase">
+              Drama Admin Panel
+            </span>
           </div>
-          <div className="flex items-center gap-2 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs px-3 py-1.5 rounded-full font-medium">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+          <button
+            onClick={handleLogout}
+            className="flex items-center gap-2 px-3 py-1.5 bg-zinc-950 hover:bg-purple-950/50 text-xs text-purple-300 hover:text-purple-200 rounded-lg transition-all border border-purple-900/40 hover:border-purple-500/80 shadow-[0_0_10px_rgba(168,85,247,0.1)]"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            Sair
+          </button>
+        </div>
+
+        {/* Cabeçalho com a Logo DRAMA */}
+        <header className="flex flex-col sm:flex-row items-center justify-between bg-zinc-950/80 border border-purple-900/50 p-6 rounded-2xl shadow-[0_0_30px_rgba(168,85,247,0.15)] backdrop-blur-xl relative overflow-hidden group">
+          <div className="absolute -top-12 -left-12 w-32 h-32 bg-purple-600/20 rounded-full blur-2xl pointer-events-none" />
+          <div className="absolute -bottom-12 -right-12 w-32 h-32 bg-fuchsia-600/20 rounded-full blur-2xl pointer-events-none" />
+
+          <div className="flex flex-col items-center sm:items-start gap-2 z-10">
+            {/* Logo Drama com efeito Glow Néon */}
+            <img
+              src="/logo-drama.png"
+              alt="Drama Logo"
+              className="h-16 sm:h-20 w-auto object-contain drop-shadow-[0_0_15px_rgba(168,85,247,0.7)] hover:scale-105 transition-transform duration-300"
+            />
+            <p className="text-[11px] text-purple-300/80 tracking-widest uppercase font-mono mt-1">
+              Transmissão 24/7 & Cyber Stream
+            </p>
+          </div>
+
+          <div className="mt-4 sm:mt-0 flex items-center gap-2 bg-purple-950/60 border border-purple-500/40 text-purple-300 text-xs px-4 py-2 rounded-full font-medium shadow-[0_0_15px_rgba(168,85,247,0.3)] z-10">
+            <span className="w-2.5 h-2.5 rounded-full bg-purple-400 animate-ping" />
+            <Radio className="w-4 h-4 text-purple-400" />
             Rádio No Ar
           </div>
         </header>
 
+        {/* Controle da Playlist Ativa na Transmissão */}
+        <section className="bg-zinc-950/80 border border-purple-900/50 p-5 rounded-2xl shadow-[0_0_20px_rgba(168,85,247,0.1)] backdrop-blur-xl space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-xs tracking-wider uppercase font-bold text-purple-300 flex items-center gap-2">
+              <Disc className="w-4 h-4 text-fuchsia-400 animate-spin-slow" />
+              Playlist em Execução
+            </h2>
+            {updatingSettings && (
+              <span className="text-xs text-purple-400 flex items-center gap-1 font-mono">
+                <Loader2 className="w-3 h-3 animate-spin" /> Atualizando...
+              </span>
+            )}
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+            {['TODAS', 'Reggae', 'MPB', 'Funk', 'Geral'].map((item) => (
+              <button
+                key={item}
+                type="button"
+                onClick={() => handleActiveGenreChange(item)}
+                className={`py-2 px-3 rounded-xl text-xs font-semibold tracking-wider transition-all border ${
+                  activeGenre === item
+                    ? 'bg-gradient-to-r from-purple-700 to-fuchsia-700 text-white border-purple-400 shadow-[0_0_15px_rgba(168,85,247,0.5)]'
+                    : 'bg-black/60 text-zinc-400 border-purple-900/30 hover:border-purple-600/60 hover:text-purple-200'
+                }`}
+              >
+                {item}
+              </button>
+            ))}
+          </div>
+        </section>
+
         {/* Formulário de Adicionar Música */}
-        <section className="bg-slate-900/80 border border-slate-800 p-6 rounded-2xl shadow-xl backdrop-blur-md">
-          <h2 className="text-sm font-semibold text-slate-200 mb-3 flex items-center gap-2">
-            <Plus className="w-4 h-4 text-purple-400" />
-            Adicionar Música do YouTube
+        <section className="bg-zinc-950/80 border border-purple-900/50 p-6 rounded-2xl shadow-[0_0_20px_rgba(168,85,247,0.1)] backdrop-blur-xl space-y-4">
+          <h2 className="text-xs tracking-wider uppercase font-bold text-purple-300 flex items-center gap-2">
+            <Plus className="w-4 h-4 text-fuchsia-400" />
+            Adicionar Música (YouTube)
           </h2>
 
           <form onSubmit={handleSubmit} className="space-y-3">
@@ -139,75 +276,105 @@ export default function Home() {
                 type="text"
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
-                placeholder="Cole o link do YouTube aqui..."
+                placeholder="Cole a URL do YouTube aqui..."
                 required
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-purple-500 pl-10 transition-all"
+                className="w-full bg-black/80 border border-purple-900/50 rounded-xl px-4 py-3 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 pl-10 transition-all shadow-inner"
               />
-              <Link2 className="w-4 h-4 text-slate-500 absolute left-3 top-3.5" />
+              <Link2 className="w-4 h-4 text-purple-400 absolute left-3 top-3.5" />
+            </div>
+
+            <div className="flex items-center gap-3">
+              <label className="text-xs text-purple-300/80 shrink-0 uppercase tracking-wider font-mono">Categoria:</label>
+              <select
+                value={genre}
+                onChange={(e) => setGenre(e.target.value)}
+                className="w-full bg-black/80 border border-purple-900/50 rounded-xl px-3 py-2 text-xs text-purple-200 focus:outline-none focus:border-purple-500"
+              >
+                {GENRES.map((g) => (
+                  <option key={g} value={g} className="bg-zinc-950 text-purple-200">{g}</option>
+                ))}
+              </select>
             </div>
 
             <button
               type="submit"
               disabled={loading}
-              className="w-full bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 font-semibold py-3 rounded-xl text-sm transition-all flex items-center justify-center gap-2 disabled:opacity-50 shadow-lg shadow-purple-600/20"
+              className="w-full bg-gradient-to-r from-purple-800 via-fuchsia-700 to-purple-800 hover:from-purple-700 hover:to-fuchsia-600 text-white font-bold tracking-wider uppercase text-xs py-3.5 rounded-xl transition-all flex items-center justify-center gap-2 disabled:opacity-50 shadow-[0_0_20px_rgba(168,85,247,0.4)] border border-purple-500/30"
             >
               {loading ? (
                 <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Processando & Adicionando...
+                  <Loader2 className="w-4 h-4 animate-spin text-purple-200" />
+                  Processando Áudio...
                 </>
               ) : (
                 <>
                   <Music className="w-4 h-4" />
-                  Adicionar à Playlist 24/7
+                  Adicionar à Rádio Drama
                 </>
               )}
             </button>
           </form>
 
           {error && (
-            <div className="mt-3 p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-xs">
+            <div className="p-3 bg-red-950/40 border border-red-800/50 rounded-xl text-red-300 text-xs">
               {error}
             </div>
           )}
         </section>
 
         {/* Lista de Músicas na Playlist */}
-        <section className="bg-slate-900/80 border border-slate-800 p-6 rounded-2xl shadow-xl backdrop-blur-md space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
-              <ListMusic className="w-4 h-4 text-purple-400" />
-              Músicas na Fila
+        <section className="bg-zinc-950/80 border border-purple-900/50 p-6 rounded-2xl shadow-[0_0_20px_rgba(168,85,247,0.1)] backdrop-blur-xl space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-purple-950/60 pb-3">
+            <h2 className="text-xs tracking-wider uppercase font-bold text-purple-300 flex items-center gap-2">
+              <ListMusic className="w-4 h-4 text-fuchsia-400" />
+              Fila de Reprodução
             </h2>
-            <span className="text-xs bg-slate-800 text-slate-400 px-2.5 py-1 rounded-full font-mono">
-              {playlist.length} faixas
-            </span>
+
+            <div className="flex items-center gap-2">
+              <Filter className="w-3.5 h-3.5 text-purple-400" />
+              <select
+                value={filterGenre}
+                onChange={(e) => setFilterGenre(e.target.value)}
+                className="bg-black/80 border border-purple-900/50 rounded-lg px-2.5 py-1 text-xs text-purple-300 focus:outline-none"
+              >
+                <option value="TODAS" className="bg-zinc-950">Todas Categorias</option>
+                {GENRES.map((g) => (
+                  <option key={g} value={g} className="bg-zinc-950">{g}</option>
+                ))}
+              </select>
+              <span className="text-xs bg-purple-950/80 border border-purple-800/50 text-purple-300 px-2.5 py-1 rounded-full font-mono">
+                {filteredPlaylist.length} faixas
+              </span>
+            </div>
           </div>
 
           {fetchingPlaylist ? (
-            <div className="flex items-center justify-center py-8 text-slate-500 text-xs gap-2">
+            <div className="flex items-center justify-center py-8 text-purple-400/60 text-xs gap-2 font-mono">
               <Loader2 className="w-4 h-4 animate-spin" />
-              Carregando playlist...
+              Carregando dados...
             </div>
-          ) : playlist.length === 0 ? (
-            <div className="text-center py-8 border border-dashed border-slate-800 rounded-xl text-slate-500 text-xs">
-              Nenhuma música na fila. Adicione um link do YouTube acima!
+          ) : filteredPlaylist.length === 0 ? (
+            <div className="text-center py-8 border border-dashed border-purple-900/30 rounded-xl text-zinc-500 text-xs">
+              Nenhuma música encontrada nesta categoria.
             </div>
           ) : (
-            <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
-              {playlist.map((song, index) => (
+            <div className="space-y-2 max-h-96 overflow-y-auto pr-1 custom-scrollbar">
+              {filteredPlaylist.map((song, index) => (
                 <div
                   key={song.id}
-                  className="flex items-center justify-between p-3.5 bg-slate-950/60 border border-slate-800/80 rounded-xl hover:border-slate-700 transition-all group"
+                  className="flex items-center justify-between p-3.5 bg-black/60 border border-purple-950 rounded-xl hover:border-purple-600/50 hover:shadow-[0_0_15px_rgba(168,85,247,0.15)] transition-all group"
                 >
                   <div className="flex items-center gap-3 min-w-0 pr-3">
-                    <span className="text-xs font-mono font-bold text-slate-600 w-5 text-center">
+                    <span className="text-xs font-mono font-bold text-purple-500/60 w-5 text-center">
                       {index + 1}
                     </span>
                     <div className="min-w-0">
-                      <p className="text-xs font-medium text-slate-200 truncate group-hover:text-purple-300 transition-colors">
+                      <p className="text-xs font-medium text-zinc-200 truncate group-hover:text-purple-300 transition-colors">
                         {song.title}
                       </p>
+                      <span className="text-[10px] bg-purple-950/60 border border-purple-900/50 text-purple-300 px-2 py-0.5 rounded-full inline-block mt-0.5 font-mono">
+                        {song.genre || 'Geral'}
+                      </span>
                     </div>
                   </div>
 
@@ -215,7 +382,7 @@ export default function Home() {
                     <button
                       onClick={() => copyLink(song.id, song.url)}
                       title="Copiar link MP3"
-                      className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-slate-200 transition-all"
+                      className="p-2 hover:bg-purple-950/50 rounded-lg text-zinc-400 hover:text-purple-300 transition-all"
                     >
                       {copiedId === song.id ? (
                         <CheckCircle2 className="w-4 h-4 text-emerald-400" />
@@ -228,7 +395,7 @@ export default function Home() {
                       onClick={() => handleDelete(song.id)}
                       disabled={deletingId === song.id}
                       title="Excluir da playlist"
-                      className="p-2 hover:bg-red-500/10 rounded-lg text-slate-400 hover:text-red-400 transition-all disabled:opacity-50"
+                      className="p-2 hover:bg-red-950/40 rounded-lg text-zinc-500 hover:text-red-400 transition-all disabled:opacity-50"
                     >
                       {deletingId === song.id ? (
                         <Loader2 className="w-4 h-4 animate-spin text-red-400" />
