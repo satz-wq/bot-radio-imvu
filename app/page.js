@@ -17,6 +17,7 @@ import {
   Disc,
   Filter,
   Sparkles,
+  Upload,
 } from 'lucide-react';
 
 const supabase = createClient(
@@ -29,10 +30,7 @@ const GENRES = ['Geral', 'Reggae', 'MPB', 'Funk'];
 export default function Home() {
   const router = useRouter();
 
-  // Autenticação
   const [authLoading, setAuthLoading] = useState(true);
-
-  // Estados do Formulário e Playlist
   const [url, setUrl] = useState('');
   const [genre, setGenre] = useState('Geral');
   const [activeGenre, setActiveGenre] = useState('TODAS');
@@ -45,7 +43,6 @@ export default function Home() {
   const [copiedId, setCopiedId] = useState(null);
   const [updatingSettings, setUpdatingSettings] = useState(false);
 
-  // 1. Bloqueia acesso se não estiver logado
   useEffect(() => {
     const checkAuth = async () => {
       const { data: { session } } = await supabase.auth.getSession();
@@ -58,7 +55,6 @@ export default function Home() {
     checkAuth();
   }, [router]);
 
-  // 2. Carrega a playlist do banco
   const refreshPlaylist = async () => {
     try {
       const res = await fetch('/api/playlist');
@@ -97,13 +93,11 @@ export default function Home() {
     };
   }, [authLoading]);
 
-  // Função de Sair
   const handleLogout = async () => {
     await supabase.auth.signOut();
     router.push('/login');
   };
 
-  // Trocar Playlist Ativa no Transmissor
   const handleActiveGenreChange = async (newGenre) => {
     setActiveGenre(newGenre);
     setUpdatingSettings(true);
@@ -120,7 +114,7 @@ export default function Home() {
     }
   };
 
-  // Adicionar nova música com categoria
+  // Envio por Link do YouTube
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
@@ -134,7 +128,6 @@ export default function Home() {
       });
 
       const data = await res.json();
-
       if (!res.ok) throw new Error(data.error || 'Erro ao adicionar música.');
 
       setUrl('');
@@ -146,7 +139,45 @@ export default function Home() {
     }
   };
 
-  // Excluir música
+  // Envio Direto de Arquivo MP3 do Computador
+  const handleFileUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    setLoading(true);
+    setError('');
+
+    try {
+      const fileName = `musica-${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from('musicas')
+        .upload(fileName, file, { contentType: file.type || 'audio/mpeg' });
+
+      if (uploadError) throw new Error(`Erro Storage: ${uploadError.message}`);
+
+      const { data: publicUrlData } = supabase.storage
+        .from('musicas')
+        .getPublicUrl(fileName);
+
+      const publicAudioUrl = publicUrlData.publicUrl;
+      const songTitle = file.name.replace(/\.[^/.]+$/, '');
+
+      const { error: dbError } = await supabase
+        .from('playlist')
+        .insert([{ title: songTitle, url: publicAudioUrl, genre }]);
+
+      if (dbError) throw new Error(`Erro Banco: ${dbError.message}`);
+
+      await refreshPlaylist();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+      e.target.value = '';
+    }
+  };
+
   const handleDelete = async (id) => {
     setDeletingId(id);
     try {
@@ -157,7 +188,6 @@ export default function Home() {
       });
 
       if (!res.ok) throw new Error('Erro ao excluir faixa.');
-
       setPlaylist((prev) => prev.filter((item) => item.id !== id));
     } catch (err) {
       alert(err.message);
@@ -191,7 +221,6 @@ export default function Home() {
     <main className="min-h-screen bg-black text-zinc-100 p-4 md:p-8 flex flex-col items-center selection:bg-purple-600 selection:text-white">
       <div className="w-full max-w-2xl space-y-6">
 
-        {/* Topbar Administrador & Logout */}
         <div className="flex justify-between items-center w-full border-b border-purple-950/60 pb-3">
           <div className="flex items-center gap-2">
             <Sparkles className="w-4 h-4 text-purple-400 animate-pulse" />
@@ -208,13 +237,11 @@ export default function Home() {
           </button>
         </div>
 
-        {/* Cabeçalho com a Logo DRAMA */}
         <header className="flex flex-col sm:flex-row items-center justify-between bg-zinc-950/80 border border-purple-900/50 p-6 rounded-2xl shadow-[0_0_30px_rgba(168,85,247,0.15)] backdrop-blur-xl relative overflow-hidden group">
           <div className="absolute -top-12 -left-12 w-32 h-32 bg-purple-600/20 rounded-full blur-2xl pointer-events-none" />
           <div className="absolute -bottom-12 -right-12 w-32 h-32 bg-fuchsia-600/20 rounded-full blur-2xl pointer-events-none" />
 
           <div className="flex flex-col items-center sm:items-start gap-2 z-10">
-            {/* Logo Drama com efeito Glow Néon */}
             <img
               src="/logo-drama.png"
               alt="Drama Logo"
@@ -232,7 +259,6 @@ export default function Home() {
           </div>
         </header>
 
-        {/* Controle da Playlist Ativa na Transmissão */}
         <section className="bg-zinc-950/80 border border-purple-900/50 p-5 rounded-2xl shadow-[0_0_20px_rgba(168,85,247,0.1)] backdrop-blur-xl space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="text-xs tracking-wider uppercase font-bold text-purple-300 flex items-center gap-2">
@@ -263,12 +289,25 @@ export default function Home() {
           </div>
         </section>
 
-        {/* Formulário de Adicionar Música */}
+        {/* Adicionar Músicas */}
         <section className="bg-zinc-950/80 border border-purple-900/50 p-6 rounded-2xl shadow-[0_0_20px_rgba(168,85,247,0.1)] backdrop-blur-xl space-y-4">
           <h2 className="text-xs tracking-wider uppercase font-bold text-purple-300 flex items-center gap-2">
             <Plus className="w-4 h-4 text-fuchsia-400" />
-            Adicionar Música (YouTube)
+            Adicionar Músicas
           </h2>
+
+          <div className="flex items-center gap-3">
+            <label className="text-xs text-purple-300/80 shrink-0 uppercase tracking-wider font-mono">Categoria:</label>
+            <select
+              value={genre}
+              onChange={(e) => setGenre(e.target.value)}
+              className="w-full bg-black/80 border border-purple-900/50 rounded-xl px-3 py-2 text-xs text-purple-200 focus:outline-none focus:border-purple-500"
+            >
+              {GENRES.map((g) => (
+                <option key={g} value={g} className="bg-zinc-950 text-purple-200">{g}</option>
+              ))}
+            </select>
+          </div>
 
           <form onSubmit={handleSubmit} className="space-y-3">
             <div className="relative">
@@ -277,43 +316,47 @@ export default function Home() {
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
                 placeholder="Cole a URL do YouTube aqui..."
-                required
                 className="w-full bg-black/80 border border-purple-900/50 rounded-xl px-4 py-3 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 pl-10 transition-all shadow-inner"
               />
               <Link2 className="w-4 h-4 text-purple-400 absolute left-3 top-3.5" />
             </div>
 
-            <div className="flex items-center gap-3">
-              <label className="text-xs text-purple-300/80 shrink-0 uppercase tracking-wider font-mono">Categoria:</label>
-              <select
-                value={genre}
-                onChange={(e) => setGenre(e.target.value)}
-                className="w-full bg-black/80 border border-purple-900/50 rounded-xl px-3 py-2 text-xs text-purple-200 focus:outline-none focus:border-purple-500"
-              >
-                {GENRES.map((g) => (
-                  <option key={g} value={g} className="bg-zinc-950 text-purple-200">{g}</option>
-                ))}
-              </select>
-            </div>
-
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || !url}
               className="w-full bg-gradient-to-r from-purple-800 via-fuchsia-700 to-purple-800 hover:from-purple-700 hover:to-fuchsia-600 text-white font-bold tracking-wider uppercase text-xs py-3.5 rounded-xl transition-all flex items-center justify-center gap-2 disabled:opacity-50 shadow-[0_0_20px_rgba(168,85,247,0.4)] border border-purple-500/30"
             >
               {loading ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin text-purple-200" />
-                  Processando Áudio...
+                  Processando...
                 </>
               ) : (
                 <>
                   <Music className="w-4 h-4" />
-                  Adicionar à Rádio Drama
+                  Adicionar via YouTube
                 </>
               )}
             </button>
           </form>
+
+          <div className="relative flex py-1 items-center">
+            <div className="flex-grow border-t border-purple-900/40"></div>
+            <span className="flex-shrink mx-4 text-[10px] text-purple-400/60 uppercase font-mono tracking-widest">ou faça upload direto</span>
+            <div className="flex-grow border-t border-purple-900/40"></div>
+          </div>
+
+          <label className="w-full bg-zinc-900 hover:bg-purple-950/40 text-purple-300 font-bold tracking-wider uppercase text-xs py-3 rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer border border-purple-900/40 border-dashed hover:border-purple-500/80">
+            <Upload className="w-4 h-4 text-fuchsia-400" />
+            Upload de Arquivo MP3 do Computador
+            <input
+              type="file"
+              accept="audio/*"
+              onChange={handleFileUpload}
+              className="hidden"
+              disabled={loading}
+            />
+          </label>
 
           {error && (
             <div className="p-3 bg-red-950/40 border border-red-800/50 rounded-xl text-red-300 text-xs">
@@ -322,7 +365,6 @@ export default function Home() {
           )}
         </section>
 
-        {/* Lista de Músicas na Playlist */}
         <section className="bg-zinc-950/80 border border-purple-900/50 p-6 rounded-2xl shadow-[0_0_20px_rgba(168,85,247,0.1)] backdrop-blur-xl space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-purple-950/60 pb-3">
             <h2 className="text-xs tracking-wider uppercase font-bold text-purple-300 flex items-center gap-2">

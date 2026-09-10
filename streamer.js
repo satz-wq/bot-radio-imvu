@@ -21,7 +21,6 @@ const server = http.createServer(async (req, res) => {
   req.setTimeout(0);
   res.setTimeout(0);
 
-  // CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -31,13 +30,12 @@ const server = http.createServer(async (req, res) => {
     return res.end();
   }
 
-  // 1. Rota de Health Check
   if (req.url === '/health' || req.url === '/ping') {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     return res.end('OK');
   }
 
-  // 2. Rota de Conversão recebida da Vercel
+  // Rota de Conversão
   if (req.url === '/convert' && req.method === 'POST') {
     let body = '';
     req.on('data', chunk => { body += chunk.toString(); });
@@ -49,7 +47,7 @@ const server = http.createServer(async (req, res) => {
           return res.end(JSON.stringify({ error: 'URL não informada.' }));
         }
 
-        // Se for um link direto de arquivo MP3 / Supabase, ignora o YouTube e salva direto
+        // Se for arquivo MP3 / Supabase direto
         if (url.includes('.mp3') || url.includes('supabase.co') || url.includes('.m4a')) {
           const title = decodeURIComponent(url.split('/').pop().split('?')[0]) || 'Música MP3';
           const { error: dbErr } = await supabase
@@ -63,34 +61,33 @@ const server = http.createServer(async (req, res) => {
         }
 
         const tempFilePath = path.join(os.tmpdir(), `audio-${Date.now()}.mp3`);
+        const cookiesPath = path.join(process.cwd(), 'cookies.txt');
 
-        // Executa yt-dlp simulando clientes Android/iOS para burlar o bot check do YouTube
-        await ytDlp(url, {
+        // Configuração do yt-dlp com autenticação por cookies
+        const ytOptions = {
           extractAudio: true,
           audioFormat: 'mp3',
           audioQuality: '128K',
           output: tempFilePath,
           noCheckCertificates: true,
           noWarnings: true,
-          extractorArgs: 'youtube:player_client=ios,android,mweb',
-          addHeader: [
-            'referer:youtube.com',
-            'user-agent:Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1'
-          ]
-        });
+        };
 
-        // Obtém o título
+        // Adiciona os cookies se o arquivo existir na raiz
+        if (fs.existsSync(cookiesPath)) {
+          ytOptions.cookies = cookiesPath;
+        }
+
+        await ytDlp(url, ytOptions);
+
         let title = 'Música do YouTube';
         try {
-          const info = await ytDlp(url, { 
-            dumpSingleJson: true, 
-            noWarnings: true,
-            extractorArgs: 'youtube:player_client=ios,android,mweb' 
-          });
+          const infoOpt = { dumpSingleJson: true, noWarnings: true };
+          if (fs.existsSync(cookiesPath)) infoOpt.cookies = cookiesPath;
+          const info = await ytDlp(url, infoOpt);
           title = info.title || title;
         } catch (e) {}
 
-        // Lê o arquivo gerado e envia ao Supabase
         const audioBuffer = fs.readFileSync(tempFilePath);
         if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
 
@@ -107,7 +104,6 @@ const server = http.createServer(async (req, res) => {
 
         const publicAudioUrl = publicUrlData.publicUrl;
 
-        // Insere na tabela 'playlist'
         const { error: dbError } = await supabase
           .from('playlist')
           .insert([{ title, url: publicAudioUrl, genre: genre || 'Geral' }]);
@@ -126,7 +122,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 3. Rota de Transmissão contínua de Áudio
+  // Rota de Transmissão 24/7
   if (req.url === '/' || req.url === '/stream') {
     res.writeHead(200, {
       'Content-Type': 'audio/mpeg',
