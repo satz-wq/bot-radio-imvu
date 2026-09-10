@@ -63,28 +63,50 @@ const server = http.createServer(async (req, res) => {
         const tempFilePath = path.join(os.tmpdir(), `audio-${Date.now()}.mp3`);
         const cookiesPath = path.join(process.cwd(), 'cookies.txt');
 
-        // Configuração do yt-dlp com autenticação por cookies
-        const ytOptions = {
-          extractAudio: true,
-          audioFormat: 'mp3',
-          audioQuality: '128K',
-          output: tempFilePath,
-          noCheckCertificates: true,
-          noWarnings: true,
-        };
+        // TENTATIVA 1: Usando clientes móveis (Android/MWeb) para evitar bloqueio de cookies por IP
+        let downloadSuccess = false;
+        try {
+          await ytDlp(url, {
+            extractAudio: true,
+            audioFormat: 'mp3',
+            audioQuality: '128K',
+            output: tempFilePath,
+            noCheckCertificates: true,
+            noWarnings: true,
+            extractorArgs: 'youtube:player_client=android,mweb'
+          });
+          downloadSuccess = true;
+        } catch (err1) {
+          console.warn('Tentativa 1 (Android client) falhou, tentando com cookies...', err1.message);
 
-        // Adiciona os cookies se o arquivo existir na raiz
-        if (fs.existsSync(cookiesPath)) {
-          ytOptions.cookies = cookiesPath;
+          // TENTATIVA 2: Recorre aos cookies caso o vídeo seja estritamente privado/restrito
+          if (fs.existsSync(cookiesPath)) {
+            await ytDlp(url, {
+              extractAudio: true,
+              audioFormat: 'mp3',
+              audioQuality: '128K',
+              output: tempFilePath,
+              noCheckCertificates: true,
+              noWarnings: true,
+              cookies: cookiesPath
+            });
+            downloadSuccess = true;
+          } else {
+            throw err1;
+          }
         }
 
-        await ytDlp(url, ytOptions);
+        if (!downloadSuccess || !fs.existsSync(tempFilePath)) {
+          throw new Error('Não foi possível gerar o arquivo de áudio.');
+        }
 
         let title = 'Música do YouTube';
         try {
-          const infoOpt = { dumpSingleJson: true, noWarnings: true };
-          if (fs.existsSync(cookiesPath)) infoOpt.cookies = cookiesPath;
-          const info = await ytDlp(url, infoOpt);
+          const info = await ytDlp(url, { 
+            dumpSingleJson: true, 
+            noWarnings: true,
+            extractorArgs: 'youtube:player_client=android,mweb' 
+          });
           title = info.title || title;
         } catch (e) {}
 
