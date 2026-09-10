@@ -2,6 +2,10 @@ const http = require('http');
 const https = require('https');
 const Throttle = require('throttle');
 const { createClient } = require('@supabase/supabase-js');
+const ytDlp = require('yt-dlp-exec');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
 require('dotenv').config({ path: '.env.local' });
 
 const supabase = createClient(
@@ -13,23 +17,97 @@ let clients = [];
 let audioBufferRing = [];
 const MAX_RING_SIZE = 35;
 
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   req.setTimeout(0);
   res.setTimeout(0);
 
-  // Rota de Health Check para aprovação do deploy no Render
+  // CORS
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    return res.end();
+  }
+
+  // 1. Rota de Health Check
   if (req.url === '/health' || req.url === '/ping') {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     return res.end('OK');
   }
 
-  // Rota da Rádio
+  // 2. Rota de Conversão recebida da Vercel
+  if (req.url === '/convert' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk.toString(); });
+    req.on('end', async () => {
+      try {
+        const { url, genre } = JSON.parse(body || '{}');
+        if (!url) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'URL não informada.' }));
+        }
+
+        const tempFilePath = path.join(os.tmpdir(), `audio-${Date.now()}.mp3`);
+
+        // Executa o yt-dlp diretamente no Linux do Render
+        await ytDlp(url, {
+          extractAudio: true,
+          audioFormat: 'mp3',
+          audioQuality: '128K',
+          output: tempFilePath,
+          noCheckCertificates: true,
+          noWarnings: true,
+          userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        });
+
+        // Obtém informações do título
+        const info = await ytDlp(url, { dumpSingleJson: true, noWarnings: true });
+        const title = info.title || 'Música da Rádio';
+
+        // Lê o MP3 gerado e envia para o Supabase Storage
+        const audioBuffer = fs.readFileSync(tempFilePath);
+        if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
+
+        const fileName = `musica-${Date.now()}.mp3`;
+        const { error: uploadError } = await supabase.storage
+          .from('musicas')
+          .upload(fileName, audioBuffer, { contentType: 'audio/mpeg' });
+
+        if (uploadError) throw uploadError;
+
+        const { data: publicUrlData } = supabase.storage
+          .from('musicas')
+          .getPublicUrl(fileName);
+
+        const publicAudioUrl = publicUrlData.publicUrl;
+
+        // Insere na tabela 'playlist'
+        const { error: dbError } = await supabase
+          .from('playlist')
+          .insert([{ title, url: publicAudioUrl, genre: genre || 'Geral' }]);
+
+        if (dbError) throw dbError;
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: true, title, audioUrl: publicAudioUrl }));
+
+      } catch (err) {
+        console.error('Erro no download (Render):', err);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ error: err.message || 'Erro ao converter música no servidor.' }));
+      }
+    });
+    return;
+  }
+
+  // 3. Rota de Transmissão contínua de Áudio
   if (req.url === '/' || req.url === '/stream') {
     res.writeHead(200, {
       'Content-Type': 'audio/mpeg',
       'Connection': 'keep-alive',
       'Transfer-Encoding': 'chunked',
-      'Access-Control-Allow-Origin': '*',
       'Cache-Control': 'no-cache, no-store, must-revalidate'
     });
 
@@ -76,7 +154,6 @@ function getStream(url) {
   });
 }
 
-// Algoritmo para embaralhar o array sem repetir até completar o ciclo
 function shuffleArray(array) {
   const shuffled = [...array];
   for (let i = shuffled.length - 1; i > 0; i--) {
@@ -88,7 +165,6 @@ function shuffleArray(array) {
 
 async function playNextSong() {
   try {
-    // 1. Consulta qual playlist está selecionada no painel
     const { data: setting } = await supabase
       .from('settings')
       .select('value')
@@ -97,7 +173,6 @@ async function playNextSong() {
 
     const activeGenre = setting?.value || 'TODAS';
 
-    // 2. Busca as músicas filtrando pelo gênero ativo
     let query = supabase.from('playlist').select('*');
     if (activeGenre !== 'TODAS') {
       query = query.eq('genre', activeGenre);
@@ -111,11 +186,9 @@ async function playNextSong() {
       return;
     }
 
-    // 3. Embaralha a lista completa
     const shuffledPlaylist = shuffleArray(playlist);
     console.log(`\n🔀 Nova rodada iniciada [Playlist: ${activeGenre}] - ${shuffledPlaylist.length} músicas na fila.`);
 
-    // 4. Toca todas as músicas do ciclo antes de embaralhar novamente
     for (const song of shuffledPlaylist) {
       console.log(`▶ Tocando agora [${song.genre || 'Geral'}]: ${song.title}`);
       await streamAudioUrl(song.url);
@@ -148,12 +221,9 @@ function streamAudioUrl(url) {
   });
 }
 
-// Define a porta enviada pelo Render (ou 8000 como fallback local)
 const PORT = process.env.PORT || 8000;
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log('====================================================');
   console.log(`Servidor de Rádio 24/7 rodando na porta ${PORT}`);
-  console.log('====================================================');
   playNextSong();
 });
