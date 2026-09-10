@@ -1,12 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
-import fs from 'fs';
-import path from 'path';
-import os from 'os';
-
-const execFilePromise = promisify(execFile);
+import ytdl from '@distube/ytdl-core';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -15,54 +9,46 @@ const supabase = createClient(
 
 export async function POST(request) {
   try {
-    // A variável 'request' só existe dentro da função POST
     const { url, genre } = await request.json();
 
     if (!url) {
-      return NextResponse.json({ error: 'URL do YouTube não informada.' }, { status: 400 });
+      return NextResponse.json({ error: 'URL não informada.' }, { status: 400 });
     }
 
-    const isWindows = process.platform === 'win32';
-    const binFolder = path.join(process.cwd(), 'bin');
-    
-    // Define o executável conforme o sistema (Windows local vs Linux Vercel)
-    const ytDlpPath = isWindows 
-      ? path.join(binFolder, 'yt-dlp.exe') 
-      : 'yt-dlp';
+    // Se o usuário colou um link direto de áudio (ex: arquivo MP3 / Supabase Storage)
+    if (url.includes('.mp3') || url.includes('supabase.co')) {
+      const title = url.split('/').pop().split('?')[0] || 'Música Direta MP3';
+      const { error: dbError } = await supabase
+        .from('playlist')
+        .insert([{ title, url, genre: genre || 'Geral' }]);
 
-    // 1. Extrair e converter o áudio
-    const tempFilePath = path.join(os.tmpdir(), `audio-${Date.now()}.mp3`);
-
-    const ytArgs = [
-      url,
-      '--extract-audio',
-      '--audio-format', 'mp3',
-      '--audio-quality', '128K',
-      '-o', tempFilePath,
-      '--no-check-certificates'
-    ];
-
-    if (isWindows) {
-      ytArgs.push('--ffmpeg-location', binFolder);
+      if (dbError) throw new Error(`Erro Banco: ${dbError.message}`);
+      return NextResponse.json({ success: true, title, audioUrl: url });
     }
 
-    await execFilePromise(ytDlpPath, ytArgs);
+    // Valida se o link pertence ao YouTube
+    if (!ytdl.validateURL(url)) {
+      return NextResponse.json({ error: 'URL do YouTube inválida.' }, { status: 400 });
+    }
 
-    // 2. Obter título do vídeo
-    const { stdout: jsonOutput } = await execFilePromise(ytDlpPath, [
-      url,
-      '--dump-single-json',
-      '--no-warnings'
-    ]);
-    const info = JSON.parse(jsonOutput);
-    const title = info.title || 'Música sem título';
+    // 1. Obter informações do vídeo
+    const info = await ytdl.getInfo(url);
+    const title = info.videoDetails.title || 'Música sem título';
 
-    // 3. Ler o MP3 e enviar para o Supabase Storage
-    const audioBuffer = fs.readFileSync(tempFilePath);
-    if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
+    // 2. Extrair o áudio direto para memória
+    const audioStream = ytdl(url, {
+      filter: 'audioonly',
+      quality: 'highestaudio',
+    });
 
+    const chunks = [];
+    for await (const chunk of audioStream) {
+      chunks.push(chunk);
+    }
+    const audioBuffer = Buffer.concat(chunks);
+
+    // 3. Upload para o Supabase Storage
     const fileName = `musica-${Date.now()}.mp3`;
-
     const { error: uploadError } = await supabase.storage
       .from('musicas')
       .upload(fileName, audioBuffer, { contentType: 'audio/mpeg' });
@@ -75,7 +61,7 @@ export async function POST(request) {
 
     const publicAudioUrl = publicUrlData.publicUrl;
 
-    // 4. Inserir na tabela 'playlist' com a categoria/gênero
+    // 4. Salvar na playlist
     const { error: dbError } = await supabase
       .from('playlist')
       .insert([{ title, url: publicAudioUrl, genre: genre || 'Geral' }]);
