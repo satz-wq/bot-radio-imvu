@@ -1,8 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import ytdl from '@distube/ytdl-core';
 
-// Estende o tempo de execução na Vercel para até 60 segundos
 export const maxDuration = 60;
 
 const supabase = createClient(
@@ -18,7 +16,7 @@ export async function POST(request) {
       return NextResponse.json({ error: 'URL não informada.' }, { status: 400 });
     }
 
-    // Aceita links diretos de arquivos MP3 (ex: Supabase Storage)
+    // Aceita link direto de arquivo MP3 / Supabase Storage
     if (url.includes('.mp3') || url.includes('supabase.co')) {
       const title = url.split('/').pop().split('?')[0] || 'Música Direta MP3';
       const { error: dbError } = await supabase
@@ -29,45 +27,42 @@ export async function POST(request) {
       return NextResponse.json({ success: true, title, audioUrl: url });
     }
 
-    // Normaliza URLs do formato compartilhado (youtu.be/) para o formato padrão
-    let videoUrl = url.trim();
-    if (videoUrl.includes('youtu.be/')) {
-      const videoId = videoUrl.split('youtu.be/')[1].split('?')[0];
-      videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-    }
-
-    if (!ytdl.validateURL(videoUrl)) {
-      return NextResponse.json({ error: 'URL do YouTube inválida.' }, { status: 400 });
-    }
-
-    // Configuração de cabeçalhos para simular navegação humana
-    const ytdlOptions = {
-      requestOptions: {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-          'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
-        },
+    // 1. Requisitar extração de áudio bypassando o bloqueio de IP do YouTube
+    const cobaltRes = await fetch('https://api.cobalt.tools/api/json', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
       },
-    };
-
-    // 1. Obter detalhes do vídeo
-    const info = await ytdl.getInfo(videoUrl, ytdlOptions);
-    const title = info.videoDetails?.title || 'Música sem título';
-
-    // 2. Baixar o fluxo de áudio
-    const audioStream = ytdl(videoUrl, {
-      ...ytdlOptions,
-      filter: 'audioonly',
-      quality: 'highestaudio',
+      body: JSON.stringify({
+        url: url,
+        downloadMode: 'audio',
+        audioFormat: 'mp3',
+      }),
     });
 
-    const chunks = [];
-    for await (const chunk of audioStream) {
-      chunks.push(chunk);
-    }
-    const audioBuffer = Buffer.concat(chunks);
+    const cobaltData = await cobaltRes.json();
 
-    // 3. Upload para o Supabase Storage
+    if (!cobaltRes.ok || cobaltData.status === 'error') {
+      throw new Error(cobaltData.text || 'O YouTube bloqueou este vídeo temporariamente.');
+    }
+
+    const audioDownloadUrl = cobaltData.url;
+
+    // 2. Baixar o arquivo MP3 gerado
+    const audioFileRes = await fetch(audioDownloadUrl);
+    if (!audioFileRes.ok) throw new Error('Falha ao obter arquivo de áudio.');
+
+    const audioArrayBuffer = await audioFileRes.arrayBuffer();
+    const audioBuffer = Buffer.from(audioArrayBuffer);
+
+    // 3. Obter o título da música
+    let title = 'Música do YouTube';
+    if (cobaltData.filename) {
+      title = cobaltData.filename.replace(/\.[^/.]+$/, '');
+    }
+
+    // 4. Upload para o Supabase Storage
     const fileName = `musica-${Date.now()}.mp3`;
     const { error: uploadError } = await supabase.storage
       .from('musicas')
@@ -81,7 +76,7 @@ export async function POST(request) {
 
     const publicAudioUrl = publicUrlData.publicUrl;
 
-    // 4. Salvar registro no banco
+    // 5. Salvar registro na tabela 'playlist'
     const { error: dbError } = await supabase
       .from('playlist')
       .insert([{ title, url: publicAudioUrl, genre: genre || 'Geral' }]);
@@ -92,13 +87,8 @@ export async function POST(request) {
 
   } catch (err) {
     console.error('Erro na conversão:', err);
-    
-    if (err.message.includes('not a bot') || err.message.includes('Sign in')) {
-      return NextResponse.json({ 
-        error: 'Bloqueio temporário de IP do YouTube. Tente novamente em alguns instantes ou envie a URL inteira (https://www.youtube.com/watch?v=...).' 
-      }, { status: 403 });
-    }
-
-    return NextResponse.json({ error: err.message || 'Erro ao processar áudio.' }, { status: 500 });
+    return NextResponse.json({ 
+      error: err.message || 'Erro ao processar música. Tente outro link do YouTube.' 
+    }, { status: 500 });
   }
 }
