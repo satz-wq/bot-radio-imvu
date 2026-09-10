@@ -27,15 +27,23 @@ export async function POST(request) {
       return NextResponse.json({ success: true, title, audioUrl: url });
     }
 
-    // 1. Requisitar extração de áudio bypassando o bloqueio de IP do YouTube
-    const cobaltRes = await fetch('https://api.cobalt.tools/api/json', {
+    // Normaliza a URL do YouTube
+    let cleanUrl = url.trim();
+    if (cleanUrl.includes('youtu.be/')) {
+      const videoId = cleanUrl.split('youtu.be/')[1].split('?')[0];
+      cleanUrl = `https://www.youtube.com/watch?v=${videoId}`;
+    }
+
+    // 1. Requisitar extração na API Cobalt v10 (endpoint: https://api.cobalt.tools/)
+    const cobaltRes = await fetch('https://api.cobalt.tools/', {
       method: 'POST',
       headers: {
         'Accept': 'application/json',
         'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
       },
       body: JSON.stringify({
-        url: url,
+        url: cleanUrl,
         downloadMode: 'audio',
         audioFormat: 'mp3',
       }),
@@ -44,19 +52,23 @@ export async function POST(request) {
     const cobaltData = await cobaltRes.json();
 
     if (!cobaltRes.ok || cobaltData.status === 'error') {
-      throw new Error(cobaltData.text || 'O YouTube bloqueou este vídeo temporariamente.');
+      const errorMsg = cobaltData.text || cobaltData.error?.code || 'O YouTube rejeitou a requisição.';
+      throw new Error(`Cobalt API: ${errorMsg}`);
     }
 
     const audioDownloadUrl = cobaltData.url;
+    if (!audioDownloadUrl) {
+      throw new Error('Não foi possível obter o link de áudio.');
+    }
 
     // 2. Baixar o arquivo MP3 gerado
     const audioFileRes = await fetch(audioDownloadUrl);
-    if (!audioFileRes.ok) throw new Error('Falha ao obter arquivo de áudio.');
+    if (!audioFileRes.ok) throw new Error('Falha ao obter o arquivo de áudio convertido.');
 
     const audioArrayBuffer = await audioFileRes.arrayBuffer();
     const audioBuffer = Buffer.from(audioArrayBuffer);
 
-    // 3. Obter o título da música
+    // 3. Extrair o título do arquivo
     let title = 'Música do YouTube';
     if (cobaltData.filename) {
       title = cobaltData.filename.replace(/\.[^/.]+$/, '');
