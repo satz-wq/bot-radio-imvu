@@ -17,7 +17,7 @@ export async function POST(request) {
       return NextResponse.json({ error: 'URL não informada.' }, { status: 400 });
     }
 
-    // Links de áudio direto processados na Vercel
+    // Links MP3 / Supabase diretos são salvos diretamente no Supabase pela Vercel
     if (url.includes('.mp3') || url.includes('supabase.co') || url.includes('.m4a')) {
       const title = decodeURIComponent(url.split('/').pop().split('?')[0]) || 'Música MP3';
       const { error: dbError } = await supabase
@@ -28,7 +28,7 @@ export async function POST(request) {
       return NextResponse.json({ success: true, title, audioUrl: url });
     }
 
-    // Encaminha requisições do YouTube ao Render
+    // Encaminha requisições do YouTube para o Render
     const renderRes = await fetch('https://nodrama-radio.onrender.com/convert', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -38,16 +38,14 @@ export async function POST(request) {
     const data = await renderRes.json();
 
     if (!renderRes.ok) {
-      throw new Error(data.error || 'Erro ao processar música no Render.');
+      throw new Error(data.error || 'Erro no servidor de conversão do Render.');
     }
 
     return NextResponse.json(data);
   } catch (err) {
     console.error('Erro na rota convert:', err);
     return NextResponse.json({ 
-      error: err.message === 'fetch failed' 
-        ? 'O servidor do Render levou muito tempo para responder ou reiniciar. Tente novamente em alguns segundos.' 
-        : err.message 
+      error: err.message || 'Falha ao se comunicar com o servidor de conversão.' 
     }, { status: 500 });
   }
 }

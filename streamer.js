@@ -22,6 +22,96 @@ function extractVideoId(url) {
   return match ? match[1] : null;
 }
 
+// Função de conversão executada em segundo plano
+async function processBackgroundConversion(url, genre) {
+  console.log(`[🚀 Background] Iniciando conversão para URL: ${url}`);
+  try {
+    const tempFilePath = path.join(os.tmpdir(), `audio-${Date.now()}.mp3`);
+    let audioBuffer = null;
+    let title = 'Música do YouTube';
+
+    try {
+      await ytDlp(url, {
+        extractAudio: true,
+        audioFormat: 'mp3',
+        audioQuality: '128K',
+        output: tempFilePath,
+        noCheckCertificates: true,
+        noWarnings: true,
+        noPlaylist: true,
+        maxFilesize: '35M',
+        extractorArgs: 'youtube:player_client=tv,creator'
+      });
+
+      if (fs.existsSync(tempFilePath)) {
+        audioBuffer = fs.readFileSync(tempFilePath);
+        fs.unlinkSync(tempFilePath);
+      }
+
+      try {
+        const info = await ytDlp(url, { 
+          dumpSingleJson: true, 
+          noWarnings: true,
+          noPlaylist: true,
+          extractorArgs: 'youtube:player_client=tv,creator'
+        });
+        if (info?.title) title = info.title;
+      } catch (e) {}
+
+    } catch (err1) {
+      console.warn('[⚠️ Background] yt-dlp falhou, tentando API fallback...', err1.message);
+
+      const cleanUrl = `https://www.youtube.com/watch?v=${extractVideoId(url) || ''}`;
+      const fallbackRes = await fetch(`https://api.vkrdown.com/v4/youtube?url=${encodeURIComponent(cleanUrl)}`);
+      
+      if (fallbackRes.ok) {
+        const fallbackData = await fallbackRes.json();
+        const downloadItem = fallbackData.data?.downloads?.find(d => d.format === 'mp3' || d.extension === 'mp3' || d.type === 'audio');
+        
+        if (downloadItem?.url) {
+          title = fallbackData.data?.title || title;
+          const audioFileRes = await fetch(downloadItem.url);
+          if (audioFileRes.ok) {
+            const arrayBuf = await audioFileRes.arrayBuffer();
+            audioBuffer = Buffer.from(arrayBuf);
+          }
+        }
+      }
+    }
+
+    if (!audioBuffer || audioBuffer.length === 0) {
+      console.error('[❌ Background] Não foi possível extrair o áudio.');
+      return;
+    }
+
+    // Upload para o Supabase Storage
+    const fileName = `musica-${Date.now()}.mp3`;
+    const { error: uploadError } = await supabase.storage
+      .from('musicas')
+      .upload(fileName, audioBuffer, { contentType: 'audio/mpeg' });
+
+    if (uploadError) throw uploadError;
+
+    const { data: publicUrlData } = supabase.storage
+      .from('musicas')
+      .getPublicUrl(fileName);
+
+    const publicAudioUrl = publicUrlData.publicUrl;
+
+    // Inserção no banco de dados na tabela 'playlist'
+    const { error: dbError } = await supabase
+      .from('playlist')
+      .insert([{ title, url: publicAudioUrl, genre: genre || 'Geral' }]);
+
+    if (dbError) throw dbError;
+
+    console.log(`[✅ Background] Música adicionada com sucesso à playlist: ${title}`);
+
+  } catch (err) {
+    console.error('[❌ Background Error]:', err.message);
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   req.setTimeout(0);
   res.setTimeout(0);
@@ -40,7 +130,7 @@ const server = http.createServer(async (req, res) => {
     return res.end('OK');
   }
 
-  // Rota de Conversão
+  // Rota de Conversão (Resposta Imediata)
   if (req.url === '/convert' && req.method === 'POST') {
     let body = '';
     req.on('data', chunk => { body += chunk.toString(); });
@@ -52,7 +142,7 @@ const server = http.createServer(async (req, res) => {
           return res.end(JSON.stringify({ error: 'URL não informada.' }));
         }
 
-        // Links MP3 / Supabase diretos
+        // Links MP3 / Supabase diretos são inseridos imediatamente
         if (url.includes('.mp3') || url.includes('supabase.co') || url.includes('.m4a')) {
           const title = decodeURIComponent(url.split('/').pop().split('?')[0]) || 'Música MP3';
           const { error: dbErr } = await supabase
@@ -65,92 +155,20 @@ const server = http.createServer(async (req, res) => {
           return res.end(JSON.stringify({ success: true, title, audioUrl: url }));
         }
 
-        const tempFilePath = path.join(os.tmpdir(), `audio-${Date.now()}.mp3`);
-        let audioBuffer = null;
-        let title = 'Música do YouTube';
-
-        // Otimização do yt-dlp para o plano gratuito do Render
-        try {
-          await ytDlp(url, {
-            extractAudio: true,
-            audioFormat: 'mp3',
-            audioQuality: '128K',
-            output: tempFilePath,
-            noCheckCertificates: true,
-            noWarnings: true,
-            noPlaylist: true,
-            maxFilesize: '35M',
-            extractorArgs: 'youtube:player_client=tv,creator'
-          });
-
-          if (fs.existsSync(tempFilePath)) {
-            audioBuffer = fs.readFileSync(tempFilePath);
-            fs.unlinkSync(tempFilePath);
-          }
-
-          try {
-            const info = await ytDlp(url, { 
-              dumpSingleJson: true, 
-              noWarnings: true,
-              noPlaylist: true,
-              extractorArgs: 'youtube:player_client=tv,creator'
-            });
-            if (info?.title) title = info.title;
-          } catch (e) {}
-
-        } catch (err1) {
-          console.warn('yt-dlp falhou, buscando via API fallback...', err1.message);
-
-          const cleanUrl = `https://www.youtube.com/watch?v=${extractVideoId(url) || ''}`;
-          const fallbackRes = await fetch(`https://api.vkrdown.com/v4/youtube?url=${encodeURIComponent(cleanUrl)}`);
-          
-          if (fallbackRes.ok) {
-            const fallbackData = await fallbackRes.json();
-            const downloadItem = fallbackData.data?.downloads?.find(d => d.format === 'mp3' || d.extension === 'mp3' || d.type === 'audio');
-            
-            if (downloadItem?.url) {
-              title = fallbackData.data?.title || title;
-              const audioFileRes = await fetch(downloadItem.url);
-              if (audioFileRes.ok) {
-                const arrayBuf = await audioFileRes.arrayBuffer();
-                audioBuffer = Buffer.from(arrayBuf);
-              }
-            }
-          }
-        }
-
-        if (!audioBuffer || audioBuffer.length === 0) {
-          throw new Error('Falha ao obter áudio. Verifique se o vídeo tem menos de 10 minutos.');
-        }
-
-        // Upload para o Supabase Storage
-        const fileName = `musica-${Date.now()}.mp3`;
-        const { error: uploadError } = await supabase.storage
-          .from('musicas')
-          .upload(fileName, audioBuffer, { contentType: 'audio/mpeg' });
-
-        if (uploadError) throw uploadError;
-
-        const { data: publicUrlData } = supabase.storage
-          .from('musicas')
-          .getPublicUrl(fileName);
-
-        const publicAudioUrl = publicUrlData.publicUrl;
-
-        // Inserção no Banco
-        const { error: dbError } = await supabase
-          .from('playlist')
-          .insert([{ title, url: publicAudioUrl, genre: genre || 'Geral' }]);
-
-        if (dbError) throw dbError;
-
+        // Responde instantaneamente à Vercel
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        return res.end(JSON.stringify({ success: true, title, audioUrl: publicAudioUrl }));
+        res.end(JSON.stringify({ 
+          success: true, 
+          message: 'Música enviada para conversão! Ela aparecerá na playlist em cerca de 30 segundos.' 
+        }));
+
+        // Dispara o download em segundo plano
+        processBackgroundConversion(url, genre);
 
       } catch (err) {
-        console.error('Erro no download (Render):', err);
+        console.error('Erro na requisição /convert:', err);
         res.writeHead(500, { 'Content-Type': 'application/json' });
-        return res.end(JSON.stringify({ error: err.message || 'Erro ao converter música no servidor.' }));
+        return res.end(JSON.stringify({ error: 'Erro ao processar requisição.' }));
       }
     });
     return;
